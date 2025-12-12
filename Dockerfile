@@ -22,4 +22,4 @@ EXPOSE 7860
 
 # Command to run the app
 # Note: Hugging Face expects the app on port 7860, not 8000
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "7860"]
+CMD ["python", "-m", "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "7860"]
