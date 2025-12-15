@@ -2,7 +2,7 @@ from dotenv import load_dotenv
 import os
 import requests
 import pandas as pd
-from src.recommender import MovieRecommender
+from recommender import MovieRecommender
 
 load_dotenv()
 
@@ -74,7 +74,7 @@ def run_weekly_update():
         return
 
     # 2. Get Data
-    candidates = get_popular_movies(limit=100)
+    candidates = get_popular_movies(limit=1000)
     genre_map = get_genre_map() # <--- NEW STEP
     
     # 3. Filter Duplicates
