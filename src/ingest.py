@@ -116,4 +116,4 @@ def bulk_ingest(target_count=2000):
 
 if __name__ == "__main__":
     # You can change this number to whatever you want
-    bulk_ingest(target_count=500)
+    bulk_ingest(target_count=50)
