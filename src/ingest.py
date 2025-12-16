@@ -20,7 +20,7 @@ def get_genre_map():
         print(f"Failed to load genres: {e}")
         return {}
 
-def bulk_ingest(target_count=2000):
+def bulk_ingest(target_count=50):
     print(f"--- Starting Bulk Ingestion of {target_count} Movies ---")
     
     # 1. Load Existing Brain

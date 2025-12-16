@@ -7,7 +7,7 @@ import uvicorn
 
 # Import our custom modules
 from src.recommender import MovieRecommender
-from src.ingest import run_weekly_update
+from src.ingest import bulk_ingest
 
 # --- Configuration ---
 app = FastAPI(
@@ -142,7 +142,7 @@ def background_update_task():
     """
     print(" [BACKGROUND] Starting update process...")
     # 1. Run the ingestion (Fetch from TMDB + Save to Disk)
-    run_weekly_update()
+    bulk_ingest()
     
     # 2. Reload the model in memory so the API sees the new movies immediately
     print(" [BACKGROUND] Reloading model into RAM...")
