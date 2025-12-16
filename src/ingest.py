@@ -74,7 +74,7 @@ def run_weekly_update():
         return
 
     # 2. Get Data
-    candidates = get_popular_movies(limit=1000)
+    candidates = get_popular_movies(limit=100)
     genre_map = get_genre_map() # <--- NEW STEP
     
     # 3. Filter Duplicates
