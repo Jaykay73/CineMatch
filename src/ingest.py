@@ -1,121 +1,119 @@
-from dotenv import load_dotenv
-import os
 import requests
 import pandas as pd
-from recommender import MovieRecommender
-
-load_dotenv()
+import time
+import os
+from src.recommender import MovieRecommender
 
 # CONFIGURATION
-API_KEY = os.getenv('API_KEY')
+API_KEY =  os.getenv('API_KEY')
 BASE_URL = "https://api.themoviedb.org/3"
 
 def get_genre_map():
-    """
-    Fetches the official list of Genre IDs -> Names.
-    Example: {28: 'Action', 12: 'Adventure'}
-    """
+    """Fetches Genre IDs -> Names (e.g., 28 -> 'Action')"""
     url = f"{BASE_URL}/genre/movie/list"
     params = {'api_key': API_KEY, 'language': 'en-US'}
-    
     try:
         response = requests.get(url, params=params)
         data = response.json()
-        # Turn list of dicts into a single lookup dictionary
-        mapping = {g['id']: g['name'] for g in data['genres']}
-        print("Genre map loaded.")
-        return mapping
+        return {g['id']: g['name'] for g in data.get('genres', [])}
     except Exception as e:
         print(f"Failed to load genres: {e}")
         return {}
 
-def get_popular_movies(limit=100):
-    """
-    Fetches the current most popular movies.
-    """
-    movies = []
-    pages = (limit // 20) + 1
+def bulk_ingest(target_count=2000):
+    print(f"--- Starting Bulk Ingestion of {target_count} Movies ---")
     
-    print(f"Fetching top {limit} popular movies...")
-    
-    for page in range(1, pages + 1):
-        url = f"{BASE_URL}/movie/popular"
-        params = {
-            'api_key': API_KEY, 
-            'language': 'en-US', 
-            'page': page
-        }
-        
-        try:
-            response = requests.get(url, params=params)
-            if response.status_code == 200:
-                results = response.json().get('results', [])
-                movies.extend(results)
-            else:
-                print(f"Error on page {page}: {response.status_code}")
-        except Exception as e:
-            print(f"Connection failed: {e}")
-        
-        if len(movies) >= limit:
-            break
-            
-    return movies[:limit]
-
-def run_weekly_update():
-    # 1. Load the Brain
-    print("Loading existing database...")
+    # 1. Load Existing Brain
     rec = MovieRecommender()
     try:
         rec.load('models/')
         existing_ids = set(rec.movies['id'].values)
-        print(f"Database currently holds {len(existing_ids)} movies.")
+        print(f"Loaded existing index with {len(existing_ids)} movies.")
     except:
-        print("No existing model found. Cannot update empty model.")
-        return
+        print("No existing index found. Starting fresh.")
+        existing_ids = set()
 
-    # 2. Get Data
-    candidates = get_popular_movies(limit=100)
-    genre_map = get_genre_map() # <--- NEW STEP
+    # 2. Setup
+    genre_map = get_genre_map()
+    movies_added = 0
+    page = 1
     
-    # 3. Filter Duplicates
-    new_movies_to_process = []
-    for m in candidates:
-        if m['id'] not in existing_ids:
-            new_movies_to_process.append(m)
-    
-    count = len(new_movies_to_process)
-    print(f"New additions found: {count}")
+    # TMDB 'Top Rated' or 'Popular' are best for building a good catalog
+    # Switch endpoint to 'top_rated' to get quality movies, or keep 'popular'
+    endpoint = "popular" 
 
-    if count == 0:
-        return
-
-    # 4. Compute & Ingest
-    print(f"Processing {count} new movies...")
-    
-    for m in new_movies_to_process:
-        # Resolve Genre IDs to Names
-        # m['genre_ids'] might look like [28, 12]
-        # We turn that into "Action Adventure"
-        current_genres = [genre_map.get(gid, '') for gid in m.get('genre_ids', [])]
-        genre_str = " ".join(current_genres)
-        
-        # Build the Soup with Tags
-        # Structure: Title + Title + Genres + Overview
-        soup = f"{m['title']} {m['title']} {genre_str} {m.get('overview', '')}"
-        
-        movie_data = {
-            'id': m['id'],
-            'title': m['title'],
-            'soup': soup
+    while movies_added < target_count:
+        print(f"Fetching page {page}...")
+        url = f"{BASE_URL}/movie/{endpoint}"
+        params = {
+            'api_key': API_KEY,
+            'language': 'en-US',
+            'page': page
         }
-        
-        rec.add_new_movie(movie_data)
-        print(f" - Added: {m['title']} ({genre_str})")
-        
-    # 5. Save
-    print("Saving updated index to disk...")
+
+        try:
+            response = requests.get(url, params=params)
+            if response.status_code != 200:
+                print(f"Error fetching page {page}: {response.status_code}")
+                break
+                
+            results = response.json().get('results', [])
+            
+            # If we run out of pages
+            if not results:
+                print("No more movies available from API.")
+                break
+
+            # Process this batch of 20
+            batch_added = 0
+            for m in results:
+                # Stop if we hit the limit mid-page
+                if movies_added >= target_count:
+                    break
+
+                # Skip duplicates
+                if m['id'] in existing_ids:
+                    continue
+
+                # Build Soup
+                current_genres = [genre_map.get(gid, '') for gid in m.get('genre_ids', [])]
+                genre_str = " ".join(current_genres)
+                soup = f"{m['title']} {m['title']} {genre_str} {m.get('overview', '')}"
+
+                movie_data = {
+                    'id': m['id'],
+                    'title': m['title'],
+                    'soup': soup
+                }
+
+                # Add to Model
+                rec.add_new_movie(movie_data)
+                existing_ids.add(m['id'])
+                
+                movies_added += 1
+                batch_added += 1
+
+            print(f" - Page {page}: Added {batch_added} new movies. (Total: {len(existing_ids)})")
+
+            # SAVE CHECKPOINT every 5 pages (approx 100 movies)
+            if page % 5 == 0 and batch_added > 0:
+                print(" >> Saving checkpoint to disk...")
+                rec.save('models/')
+
+            page += 1
+            
+            # Be nice to the API
+            time.sleep(0.2)
+
+        except Exception as e:
+            print(f"Critical Error: {e}")
+            break
+
+    # Final Save
+    print("--- Ingestion Complete ---")
+    print(f"Total movies in database: {len(existing_ids)}")
     rec.save('models/')
-    print("Update Complete!")
 
 if __name__ == "__main__":
-    run_weekly_update()
+    # You can change this number to whatever you want
+    bulk_ingest(target_count=500)
