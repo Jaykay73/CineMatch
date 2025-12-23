@@ -7,7 +7,7 @@ import uvicorn
 
 # Import our custom modules
 from src.recommender import MovieRecommender
-from src.ingest import bulk_ingest
+from src.ingest import ingest_high_quality_movies
 
 # --- Configuration ---
 app = FastAPI(
