@@ -3,7 +3,7 @@ import requests
 import time
 import faiss
 from dotenv import load_dotenv
-from recommender import MovieRecommender
+from src.recommender import MovieRecommender
 
 load_dotenv()
 API_KEY = os.getenv("TMDB_API_KEY")
