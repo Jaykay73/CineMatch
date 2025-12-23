@@ -1,119 +1,86 @@
-import requests
-import pandas as pd
-import time
 import os
-from src.recommender import MovieRecommender
+import requests
+import time
+from dotenv import load_dotenv
+import faiss
+from recommender import MovieRecommender
 
-# CONFIGURATION
-API_KEY =  os.getenv('API_KEY')
+load_dotenv()
+API_KEY = os.getenv("TMDB_API_KEY")
 BASE_URL = "https://api.themoviedb.org/3"
 
 def get_genre_map():
-    """Fetches Genre IDs -> Names (e.g., 28 -> 'Action')"""
     url = f"{BASE_URL}/genre/movie/list"
     params = {'api_key': API_KEY, 'language': 'en-US'}
     try:
         response = requests.get(url, params=params)
-        data = response.json()
-        return {g['id']: g['name'] for g in data.get('genres', [])}
-    except Exception as e:
-        print(f"Failed to load genres: {e}")
+        return {g['id']: g['name'] for g in response.json().get('genres', [])}
+    except:
         return {}
 
-def bulk_ingest(target_count=50):
-    print(f"--- Starting Bulk Ingestion of {target_count} Movies ---")
+def ingest_high_quality_movies(target_count=500):
+    print(f"--- 🌟 Starting High-Quality Ingest (Rating > 7.0) ---")
     
-    # 1. Load Existing Brain
+    # 2. Start Fresh & MANUALLY FIX THE INDEX
     rec = MovieRecommender()
-    try:
-        rec.load('models/')
-        existing_ids = set(rec.movies['id'].values)
-        print(f"Loaded existing index with {len(existing_ids)} movies.")
-    except:
-        print("No existing index found. Starting fresh.")
-        existing_ids = set()
-
-    # 2. Setup
+    
+   
+    rec.index = faiss.IndexFlatL2(384) 
+        
+    existing_ids = set() 
+    
     genre_map = get_genre_map()
     movies_added = 0
     page = 1
     
-    # TMDB 'Top Rated' or 'Popular' are best for building a good catalog
-    # Switch endpoint to 'top_rated' to get quality movies, or keep 'popular'
-    endpoint = "popular" 
-
     while movies_added < target_count:
-        print(f"Fetching page {page}...")
-        url = f"{BASE_URL}/movie/{endpoint}"
+        # ENDPOINT CHANGE: Use 'discover' to filter server-side
+        url = f"{BASE_URL}/discover/movie"
         params = {
             'api_key': API_KEY,
             'language': 'en-US',
+            'sort_by': 'popularity.desc', 
+            'vote_average.gte': 7.0,      # Only Good Movies
+            'vote_count.gte': 500,        # Only Popular-ish Movies
             'page': page
         }
 
         try:
             response = requests.get(url, params=params)
-            if response.status_code != 200:
-                print(f"Error fetching page {page}: {response.status_code}")
-                break
-                
             results = response.json().get('results', [])
             
-            # If we run out of pages
-            if not results:
-                print("No more movies available from API.")
-                break
+            if not results: break
 
-            # Process this batch of 20
             batch_added = 0
             for m in results:
-                # Stop if we hit the limit mid-page
-                if movies_added >= target_count:
-                    break
+                if movies_added >= target_count: break
+                if m['id'] in existing_ids: continue
 
-                # Skip duplicates
-                if m['id'] in existing_ids:
-                    continue
+                genres = [genre_map.get(gid, '') for gid in m.get('genre_ids', [])]
+                soup = f"{m['title']} {m['title']} {' '.join(genres)} {m.get('overview', '')}"
 
-                # Build Soup
-                current_genres = [genre_map.get(gid, '') for gid in m.get('genre_ids', [])]
-                genre_str = " ".join(current_genres)
-                soup = f"{m['title']} {m['title']} {genre_str} {m.get('overview', '')}"
-
-                movie_data = {
+                rec.add_new_movie({
                     'id': m['id'],
                     'title': m['title'],
-                    'soup': soup
-                }
-
-                # Add to Model
-                rec.add_new_movie(movie_data)
+                    'soup': soup,
+                    'rating': m.get('vote_average')
+                })
                 existing_ids.add(m['id'])
-                
                 movies_added += 1
                 batch_added += 1
 
-            print(f" - Page {page}: Added {batch_added} new movies. (Total: {len(existing_ids)})")
-
-            # SAVE CHECKPOINT every 5 pages (approx 100 movies)
-            if page % 5 == 0 and batch_added > 0:
-                print(" >> Saving checkpoint to disk...")
-                rec.save('models/')
-
-            page += 1
+            print(f"Page {page}: Added {batch_added} movies. (Total: {movies_added})")
             
-            # Be nice to the API
+            if movies_added >= target_count: break
+            page += 1
             time.sleep(0.2)
 
         except Exception as e:
-            print(f"Critical Error: {e}")
+            print(f"Error: {e}")
             break
 
-    # Final Save
-    print("--- Ingestion Complete ---")
-    print(f"Total movies in database: {len(existing_ids)}")
+    print("--- Saving New Brain ---")
     rec.save('models/')
 
 if __name__ == "__main__":
-    # You can change this number to whatever you want
-    bulk_ingest(target_count=50)
+    ingest_high_quality_movies(target_count=500)
