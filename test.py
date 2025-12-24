@@ -7,7 +7,7 @@ rec.load('models/')
 # Assuming 'rec' is your loaded MovieRecommender instance
 
 # Example 1: Vague description
-print(rec.recommend_on_text("running man"))
+print(rec.recommend_on_text("comedy about a group of friends going on an adventure"))
 
 
 # # Example 2: Specific vibe

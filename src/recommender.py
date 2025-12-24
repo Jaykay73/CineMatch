@@ -81,7 +81,7 @@ class MovieRecommender:
         vec = self.encoder.encode([movie_row.iloc[0]['soup']])
         return self.search(vec, k)
     
-    def recommend_on_text(self, text_query, k=5):
+    def recommend_on_text(self, text_query, k=10):
         """
         Recommends movies based on a raw text description.
         Example: "A romantic movie about a sinking ship" -> Titanic
