@@ -141,4 +141,4 @@ def ingest_high_quality_movies(target_count=50, reset=False):
 
 if __name__ == "__main__":
     # Reset=True ensures we rebuild the old movies with the NEW metadata
-    ingest_high_quality_movies(target_count=50, reset=False)
+    ingest_high_quality_movies(target_count=500, reset=True)
