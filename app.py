@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List, Optional
 import os
 import uvicorn
@@ -13,10 +13,10 @@ from src.ingest import ingest_high_quality_movies
 app = FastAPI(
     title="CineMatch API",
     description="A content-based movie recommender using FAISS & Transformers.",
-    version="1.0.0"
+    version="2.0.0"
 )
 
-# Enable CORS (Allows your future mobile app/website to talk to this API)
+# Enable CORS (Allows your frontend to talk to this API)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # In production, replace with specific domain
@@ -40,9 +40,11 @@ async def startup_event():
     if os.path.exists('models/movie_index.faiss'):
         print(" [INFO] Loading AI Model from disk...")
         rec_engine.load('models/')
-        print(f" [INFO] Model loaded. Index contains {rec_engine.index.ntotal} movies.")
+        # Safety check for index existence
+        count = rec_engine.index.ntotal if rec_engine.index else 0
+        print(f" [INFO] Model loaded. Index contains {count} movies.")
     else:
-        print(" [WARNING] No model found at 'models/'. API will return errors until model is built.")
+        print(" [WARNING] No model found at 'models/'. API will return errors until ingestion is run.")
 
 # --- Pydantic Data Models (Schema) ---
 class SearchRequest(BaseModel):
@@ -59,7 +61,8 @@ class UserHistoryRequest(BaseModel):
     k: int = 10
 
 class MovieResponse(BaseModel):
-    movie_id: int
+    # Updated to match the new Recommender output keys
+    id: int
     title: str
     score: float
 
@@ -73,15 +76,17 @@ def check_model():
 @app.get("/")
 def health_check():
     """Simple check to see if server is running."""
-    return {"status": "online and active!!!", "model_loaded": rec_engine is not None}
+    loaded = rec_engine is not None and rec_engine.index is not None
+    return {"status": "online", "model_loaded": loaded}
 
 @app.post("/search", response_model=List[MovieResponse])
 def search_movies(request: SearchRequest):
     """
     Semantic Search: Convert query to vector -> Find nearest movies.
+    Now includes Guardrails automatically via the Recommender class.
     """
     check_model()
-    results = rec_engine.recommend_on_text(request.query, k=request.k)
+    results = rec_engine.recommend(request.query, k=request.k)
     return results
 
 @app.post("/recommend/vibe", response_model=dict)
@@ -99,7 +104,8 @@ def vibe_check(request: VibeRequest):
     if not query_soup:
         raise HTTPException(status_code=400, detail="Please provide at least one tag or description.")
 
-    results = rec_engine.recommend_on_text(query_soup, k=request.k)
+    # We use the standard recommend method which now includes guardrails
+    results = rec_engine.recommend(query_soup, k=request.k)
     
     return {
         "interpreted_query": query_soup,
@@ -115,22 +121,24 @@ def recommend_for_user(request: UserHistoryRequest):
     check_model()
     results = rec_engine.recommend_for_user(request.liked_movies, k=request.k)
     
-    # Handle case where no movies were matched
-    if isinstance(results, str): 
-        raise HTTPException(status_code=404, detail=results)
+    # Handle empty results (e.g., none of the liked movies were in our DB)
+    if not results: 
+        return []
         
     return results
 
 @app.get("/recommend/movie/{title}", response_model=List[MovieResponse])
 def recommend_similar_movie(title: str):
     """
-    Classic 'Users who liked X also liked Y' (Content-based version).
+    Finds movies similar to a specific title.
+    We reuse 'recommend_for_user' logic passing a single movie.
     """
     check_model()
-    results = rec_engine.recommend_by_movie(title)
+    # Treat a single movie as a "User History" of 1
+    results = rec_engine.recommend_for_user([title], k=10)
     
-    if isinstance(results, str):
-        raise HTTPException(status_code=404, detail=results)
+    if not results:
+        raise HTTPException(status_code=404, detail=f"Movie '{title}' not found in database.")
         
     return results
 
@@ -141,24 +149,29 @@ def background_update_task():
     Runs the ingestion script and reloads the model in memory.
     """
     print(" [BACKGROUND] Starting update process...")
-    # 1. Run the ingestion (Fetch from TMDB + Save to Disk)
-    bulk_ingest()
     
+    # 1. Run Ingest: Append 50 new movies, DO NOT RESET
+    try:
+        ingest_high_quality_movies(target_count=50, reset=False)
+        print(" [BACKGROUND] Ingestion complete.")
+    except Exception as e:
+        print(f" [ERROR] Ingestion failed: {e}")
+        return
+
     # 2. Reload the model in memory so the API sees the new movies immediately
     print(" [BACKGROUND] Reloading model into RAM...")
     rec_engine.load('models/')
     print(" [BACKGROUND] Update complete. Model reloaded.")
 
-@app.post("/admin/trigger-update")
+@app.post("/update") # Simplified endpoint name
 def trigger_update(background_tasks: BackgroundTasks):
     """
     Manually triggers the 'Weekly Update' logic. 
     Runs in the background so the API doesn't freeze.
     """
     background_tasks.add_task(background_update_task)
-    return {"message": "Update process started in background. Check server logs for progress."}
+    return {"message": "Update process started in background (Append Mode)."}
 
 # --- Entry Point ---
 if __name__ == "__main__":
-    # Use this for debugging. In production, use the command line.
     uvicorn.run(app, host="0.0.0.0", port=8000)
