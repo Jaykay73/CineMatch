@@ -1,0 +1,57 @@
+name: Daily 800 Movie Reset
+
+on:
+  schedule:
+    # Runs at 00:00 UTC every day
+    - cron: '0 0 * * *'
+  # Allows you to click "Run Now" manually for testing
+  workflow_dispatch:
+
+jobs:
+  daily-reset:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # Allows the bot to push the new database back to the repo
+
+    steps:
+      # 1. Checkout the code
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          lfs: true # Important: Download the LFS files (models)
+
+      # 2. Setup Python
+      - name: Set up Python 3.9
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+
+      # 3. Install Dependencies
+      - name: Install Libraries
+        run: |
+          pip install -r requirements.txt
+
+      # 4. Run the Ingest Script
+      # We pass the API Key securely
+      - name: Run Ingest Script (800 Movies)
+        env:
+          TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
+          # This variable tells python we are in GitHub Actions
+          GITHUB_ACTIONS: "true"
+        run: |
+          python src/ingest.py
+
+      # 5. Save the New Brain to GitHub
+      - name: Commit and Push New Database
+        run: |
+          git config --global user.name "CineMatch Bot"
+          git config --global user.email "bot@cinematch.com"
+          
+          # Force add the models folder (ignoring .gitignore if present)
+          git add -f models/
+          
+          # Commit with a timestamp
+          git commit -m "🔄 Daily Refresh: 800 Top Movies $(date)" || exit 0
+          
+          # Force push because we are overwriting LFS files
+          git push origin main
