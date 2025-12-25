@@ -1,9 +1,10 @@
 import os
 import requests
 import time
+import pandas as pd
 import faiss
 from dotenv import load_dotenv
-from recommender import MovieRecommender
+from src.recommender import MovieRecommender
 
 load_dotenv()
 API_KEY = os.getenv("TMDB_API_KEY")
@@ -22,12 +23,11 @@ def get_genre_map():
 def get_movie_details(movie_id):
     """
     Fetches the 'Secret Sauce': Cast, Director, and Keywords.
-    This makes the recommender 2x smarter.
     """
     url = f"{BASE_URL}/movie/{movie_id}"
     params = {
         'api_key': API_KEY,
-        'append_to_response': 'credits,keywords' # Get everything in one shot
+        'append_to_response': 'credits,keywords'
     }
     
     try:
@@ -36,15 +36,15 @@ def get_movie_details(movie_id):
         
         data = r.json()
         
-        # 1. Get Director
+        # 1. Director
         crew = data.get('credits', {}).get('crew', [])
         director = next((person['name'] for person in crew if person['job'] == 'Director'), "")
         
-        # 2. Get Top 4 Actors
+        # 2. Cast (Top 4)
         cast = data.get('credits', {}).get('cast', [])
         top_cast = [person['name'] for person in cast[:4]]
         
-        # 3. Get Top 6 Keywords (e.g., "time travel", "dystopia")
+        # 3. Keywords (Top 6)
         keywords = [k['name'] for k in data.get('keywords', {}).get('keywords', [])[:6]]
         
         return director, top_cast, keywords
@@ -57,22 +57,31 @@ def ingest_high_quality_movies(target_count=500, reset=True):
     rec = MovieRecommender()
     existing_ids = set()
 
-    # Setup the brain (Fresh or Load existing)
+    # --- SAFETY FIX: Robust Loading Logic ---
     if reset or not os.path.exists('models/metadata.pkl'):
         print("⚠️  Mode: RESET. Creating fresh database...")
         rec.index = faiss.IndexFlatL2(384)
     else:
         print("📥 Mode: APPEND. Loading existing database...")
-        rec.load('models')
-        existing_ids = set(rec.df['id'].tolist())
-        print(f"   Found {len(existing_ids)} existing movies.")
+        try:
+            rec.load('models')
+            # Check if 'df' exists and is not empty before reading
+            if not rec.df.empty:
+                existing_ids = set(rec.df['id'].tolist())
+                print(f"   Found {len(existing_ids)} existing movies.")
+            else:
+                print("   ⚠️ Database loaded but appears empty.")
+        except Exception as e:
+            print(f"   ❌ Error loading existing DB: {e}. Starting fresh.")
+            rec.index = faiss.IndexFlatL2(384)
+            rec.df = pd.DataFrame() # Reset dataframe
 
     genre_map = get_genre_map()
     movies_added = 0
     page = 1
     
     while movies_added < target_count:
-        # Discover movies (The Filter)
+        # Discover movies
         url = f"{BASE_URL}/discover/movie"
         params = {
             'api_key': API_KEY,
@@ -85,25 +94,31 @@ def ingest_high_quality_movies(target_count=500, reset=True):
 
         try:
             response = requests.get(url, params=params)
+            
+            # --- DEBUG FIX: Catch API Errors ---
+            if response.status_code != 200:
+                print(f"❌ CRITICAL API ERROR: {response.status_code}")
+                print(f"Server Message: {response.text}")
+                break
+
             results = response.json().get('results', [])
             
-            if not results: break
+            if not results: 
+                print("⚠️ API returned 200 OK, but 'results' list is empty.")
+                break
 
             batch_added = 0
             for m in results:
                 if movies_added >= target_count: break
                 if m['id'] in existing_ids: continue
 
-                # --- THE UPGRADE IS HERE ---
-                # We fetch extra details for every single movie
+                # Fetch details
                 director, cast, keywords = get_movie_details(m['id'])
                 
-                # Convert list of genres to names
+                # Genres
                 genres = [genre_map.get(gid, '') for gid in m.get('genre_ids', [])]
                 
-                # Build the SUPER SOUP 🍲
-                # We repeat the title twice to give it weight
-                # We add Director, Cast, and Keywords into the mix
+                # Build Soup
                 soup = (
                     f"{m['title']} {m['title']} "
                     f"Director: {director} "
@@ -123,8 +138,7 @@ def ingest_high_quality_movies(target_count=500, reset=True):
                 movies_added += 1
                 batch_added += 1
                 
-                # Sleep a tiny bit to be nice to TMDB API (we are making more calls now)
-                time.sleep(0.05)
+                time.sleep(0.05) # Be nice to API
 
             print(f"Page {page}: Added {batch_added} movies. (Total New: {movies_added})")
             
@@ -149,5 +163,5 @@ if __name__ == "__main__":
         ingest_high_quality_movies(target_count=800, reset=True)
     else:
         print("👨‍💻 LOCAL DEV DETECTED: Running Safe Test.")
-        # Local Test: Just add 10 to check if it works, don't delete DB (Reset=False)
+        # Local Test: Just add 50 to check if it works, don't delete DB (Reset=False)
         ingest_high_quality_movies(target_count=50, reset=False)

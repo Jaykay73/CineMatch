@@ -7,150 +7,169 @@ import os
 
 class MovieRecommender:
     def __init__(self, model_name='all-MiniLM-L6-v2'):
-        # Load the Transformer model
+        # 1. Load the Brain
         self.encoder = SentenceTransformer(model_name)
-        # Dimension of the embedding (384 for MiniLM)
-        self.d = 384 
+        self.d = 384 # Dimension for MiniLM
+        
+        # 2. Initialize Memory (Safety First)
+        # We initialize them as empty so the code doesn't crash if accessed before loading
         self.index = None
-        self.movies = pd.DataFrame()
-        self.id_map = {} # Maps FAISS index ID to Movie ID
+        self.df = pd.DataFrame() # Replaces 'self.movies'
 
-    def preprocess_and_embed(self, df):
-        self.movies = df.reset_index(drop=True)
+    def save(self, path='models/'):
+        """Saves the index and metadata to disk."""
+        if not os.path.exists(path):
+            os.makedirs(path)
+            
+        # Save FAISS Index
+        if self.index is not None:
+            faiss.write_index(self.index, os.path.join(path, 'movie_index.faiss'))
         
-        # CPU OPTIMIZATION: Process in batches
-        # This prevents RAM spikes and shows you a progress bar
-        batch_size = 64 
-        print(f"Generating embeddings on CPU in batches of {batch_size}...")
-        
-        # sentence-transformers handles batching internally, 
-        # but setting explicit batch_size helps on CPU
-        embeddings = self.encoder.encode(
-            self.movies['soup'].tolist(), 
-            batch_size=batch_size,
-            show_progress_bar=True,
-            convert_to_numpy=True
-        )
-        
-        print("Normalizing vectors...")
-        faiss.normalize_L2(embeddings)
-        
-        print("Building Index...")
-        # IndexFlatIP is brute-force but highly optimized for CPU.
-        # It relies on BLAS libraries (MKL/OpenBLAS) which your CPU uses naturally.
-        self.index = faiss.IndexFlatIP(self.d)
-        self.index.add(embeddings)
-        
-        self.id_map = {i: row['id'] for i, row in self.movies.iterrows()}
-        print(f"Done. Indexed {self.index.ntotal} movies.")
+        # Save Metadata DataFrame
+        with open(os.path.join(path, 'metadata.pkl'), 'wb') as f:
+            pickle.dump(self.df, f)
 
-    def search(self, query_vector, k=5):
+    def load(self, path='models/'):
+        """Loads the brain from disk."""
+        index_path = os.path.join(path, 'movie_index.faiss')
+        meta_path = os.path.join(path, 'metadata.pkl')
+
+        if os.path.exists(index_path):
+            self.index = faiss.read_index(index_path)
+        
+        if os.path.exists(meta_path):
+            with open(meta_path, 'rb') as f:
+                self.df = pickle.load(f)
+
+    def add_new_movie(self, movie_data):
+        """Adds a single movie to the memory (used during ingest)."""
+        # 1. Vectorize
+        vector = self.encoder.encode([movie_data['soup']])
+        faiss.normalize_L2(vector)
+        
+        # 2. Add to Index
+        if self.index is None:
+            self.index = faiss.IndexFlatL2(self.d)
+        self.index.add(vector)
+        
+        # 3. Add to DataFrame
+        new_row = pd.DataFrame([movie_data])
+        if self.df.empty:
+            self.df = new_row
+        else:
+            self.df = pd.concat([self.df, new_row], ignore_index=True)
+
+    def get_banned_genres(self, query_text):
+        """Returns a list of genres to BAN based on the user's vibe."""
+        query_lower = query_text.lower()
+        
+        # 1. HAPPY / COMEDY MODE -> Ban Dark Stuff
+        if any(w in query_lower for w in ["happy", "uplifting", "comedy", "laugh", "cheerful", "funny"]):
+            return ["Horror", "Thriller", "War", "Crime", "Tragedy"]
+
+        # 2. FAMILY / KIDS MODE -> Ban Adult Stuff
+        if any(w in query_lower for w in ["family", "kid", "child", "animation", "disney"]):
+            return ["Horror", "Crime", "War", "Romance", "Adult"]
+
+        # 3. ROMANCE MODE -> Ban Horror
+        if "romantic" in query_lower or "romance" in query_lower:
+            return ["Horror"]
+
+        return []
+
+    def recommend(self, text_query, k=10):
         """
-        Low-level search: Input vector -> Top K Movie IDs
+        Smart Recommendation with Guardrails
         """
-        # Ensure vector is 2D (1, d) and normalized
-        query_vector = query_vector.reshape(1, -1)
+        print(f"🔎 Searching for: '{text_query}'")
+        
+        if self.df.empty or self.index is None:
+            return []
+
+        # 1. Get user vector
+        query_vector = self.encoder.encode([text_query])
         faiss.normalize_L2(query_vector)
+
+        # 2. OVER-FETCH: Ask for 20 candidates (so we have spares if we delete some)
+        distances, indices = self.index.search(query_vector, k=25)
         
-        # Search
-        distances, indices = self.index.search(query_vector, k)
-        
+        # 3. IDENTIFY BANS
+        banned_genres = self.get_banned_genres(text_query)
+        if banned_genres:
+            print(f"🛡️  Guardrails Active! Banning: {banned_genres}")
+
         results = []
+        seen_titles = set()
+        
         for i, idx in enumerate(indices[0]):
-            if idx != -1: # FAISS returns -1 if not found
-                movie_id = self.id_map[idx]
-                results.append({
-                    "movie_id": int(movie_id),
-                    "score": float(distances[0][i]),
-                    "title": self.movies[self.movies['id'] == movie_id]['title'].values[0]
-                })
+            if idx == -1 or idx >= len(self.df): continue
+            
+            # --- SAFE ACCESS ---
+            movie_data = self.df.iloc[idx].to_dict()
+            
+            # --- 4. FILTER LOGIC ---
+            movie_soup = movie_data.get('soup', '').lower()
+            
+            is_banned = False
+            for ban in banned_genres:
+                if ban.lower() in movie_soup:
+                    print(f"🚫 Blocking '{movie_data['title']}' (Contains {ban})")
+                    is_banned = True
+                    break
+            
+            if is_banned: continue
+            # -----------------------
+
+            # Deduplication
+            if movie_data['title'] in seen_titles: continue
+            
+            results.append({
+                'id': int(movie_data['id']),
+                'title': movie_data['title'],
+                'score': float(distances[0][i]),
+            })
+            seen_titles.add(movie_data['title'])
+
+            if len(results) >= k:
+                break
+        
         return results
 
-    def recommend_by_movie(self, movie_title, k=5):
-        """
-        Find movies similar to a specific movie title already in DB.
-        """
-        # Find the movie's vector
-        movie_row = self.movies[self.movies['title'].str.contains(movie_title, case=False)]
-        if movie_row.empty:
-            return "Movie not found."
-            
-        # Re-encode is safer to ensure we have the exact vector logic, 
-        # or we could cache the vectors in the dataframe to save time.
-        # Here we re-encode for simplicity.
-        vec = self.encoder.encode([movie_row.iloc[0]['soup']])
-        return self.search(vec, k)
-    
     def recommend_on_text(self, text_query, k=10):
-        """
-        Recommends movies based on a raw text description.
-        Example: "A romantic movie about a sinking ship" -> Titanic
-        """
-        print(f"Searching for: '{text_query}'...")
-        
-        # 1. Encode the user's text into a vector
-        # This runs on the CPU in milliseconds because it's just one sentence.
-        query_vector = self.encoder.encode([text_query])
-        
-        # 2. Normalize (Important for Cosine Similarity)
-        faiss.normalize_L2(query_vector)
-        
-        # 3. Search the existing index
-        # We reuse the same search logic we defined earlier
-        return self.search(query_vector, k)
+        """Wrapper for the main recommend function."""
+        return self.recommend(text_query, k)
 
-    def recommend_for_user(self, liked_movie_titles, k=5):
-        """
-        The Personalized Logic.
-        1. Get vectors for all movies the user liked.
-        2. Average them to create a 'User Profile Vector'.
-        3. Search against the index.
-        """
+    def recommend_for_user(self, liked_movie_titles, k=10):
+        """Personalized Logic based on liked movies."""
+        if self.df.empty: return []
+
         vectors = []
         for title in liked_movie_titles:
-            # Find movie in our DB
-            movie_row = self.movies[self.movies['title'].str.contains(title, case=False)]
+            # Search in self.df
+            movie_row = self.df[self.df['title'].str.contains(title, case=False, na=False)]
             if not movie_row.empty:
                 soup = movie_row.iloc[0]['soup']
                 vectors.append(self.encoder.encode(soup))
         
         if not vectors:
-            return "No known movies provided."
+            return []
 
-        # Average the vectors (User Profile)
+        # Average the vectors
         user_vector = np.mean(vectors, axis=0)
-        return self.search(user_vector, k)
-
-    def add_new_movie(self, movie_dict):
-        """
-        Incremental Learning: Add a movie without retraining.
-        movie_dict: {'id': 123, 'title': 'New Movie', 'soup': 'description...'}
-        """
-        # 1. Vectorize the new soup
-        new_vec = self.encoder.encode([movie_dict['soup']])
-        faiss.normalize_L2(new_vec)
         
-        # 2. Add to FAISS Index (Instant)
-        self.index.add(new_vec)
+        # Search using the user vector (reuse search logic manually here)
+        user_vector = user_vector.reshape(1, -1)
+        faiss.normalize_L2(user_vector)
         
-        # 3. Update Metadata DataFrame
-        # We append the new row to the pandas dataframe
-        new_row = pd.DataFrame([movie_dict])
-        self.movies = pd.concat([self.movies, new_row], ignore_index=True)
+        distances, indices = self.index.search(user_vector, k)
         
-        # 4. Update ID Map
-        # The new index ID is the last position in the dataframe
-        next_idx = len(self.movies) - 1
-        self.id_map[next_idx] = movie_dict['id']
-
-    def save(self, path='models/'):
-        """Persistence"""
-        os.makedirs(path, exist_ok=True)
-        faiss.write_index(self.index, os.path.join(path, 'movie_index.faiss'))
-        self.movies.to_pickle(os.path.join(path, 'metadata.pkl'))
-        # Note: We don't save the encoder, we load it fresh every time.
-
-    def load(self, path='models/'):
-        self.index = faiss.read_index(os.path.join(path, 'movie_index.faiss'))
-        self.movies = pd.read_pickle(os.path.join(path, 'metadata.pkl'))
-        self.id_map = {i: row['id'] for i, row in self.movies.iterrows()}
+        results = []
+        for i, idx in enumerate(indices[0]):
+            if idx != -1 and idx < len(self.df):
+                movie_data = self.df.iloc[idx]
+                results.append({
+                    'id': int(movie_data['id']),
+                    'title': movie_data['title'],
+                    'score': float(distances[0][i])
+                })
+        return results
