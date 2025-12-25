@@ -44,8 +44,8 @@ jobs:
       # 5. Save the New Brain to GitHub
       - name: Commit and Push New Database
         run: |
-          git config --global user.name "CineMatch Bot"
-          git config --global user.email "bot@cinematch.com"
+          git config --global user.email "Jaykay73@users.noreply.github.com"
+          git config --global user.name "Jaykay73"
           
           # Force add the models folder (ignoring .gitignore if present)
           git add -f models/
