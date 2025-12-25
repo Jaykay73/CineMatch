@@ -65,7 +65,7 @@ class MovieRecommender:
         
         # 1. HAPPY / COMEDY MODE -> Ban Dark Stuff
         if any(w in query_lower for w in ["happy", "uplifting", "comedy", "laugh", "cheerful", "funny"]):
-            return ["Horror", "Thriller", "War", "Crime", "Tragedy"]
+            return ["Horror", "Thriller", "Crime", "Tragedy"]
 
         # 2. FAMILY / KIDS MODE -> Ban Adult Stuff
         if any(w in query_lower for w in ["family", "kid", "child", "animation", "disney"]):
