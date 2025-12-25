@@ -140,5 +140,14 @@ def ingest_high_quality_movies(target_count=50, reset=False):
     rec.save('models/')
 
 if __name__ == "__main__":
-    # Reset=True ensures we rebuild the old movies with the NEW metadata
-    ingest_high_quality_movies(target_count=500, reset=True)
+    # Check if we are running inside GitHub Actions
+    is_github_action = os.getenv("GITHUB_ACTIONS") == "true"
+
+    if is_github_action:
+        print("🤖 AUTOMATION DETECTED: Running Daily 800-Movie Reset.")
+        # Daily Refresh: Get top 800, Wipe old data (Reset=True)
+        ingest_high_quality_movies(target_count=800, reset=True)
+    else:
+        print("👨‍💻 LOCAL DEV DETECTED: Running Safe Test.")
+        # Local Test: Just add 10 to check if it works, don't delete DB (Reset=False)
+        ingest_high_quality_movies(target_count=50, reset=False)
