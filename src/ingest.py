@@ -51,7 +51,7 @@ def get_movie_details(movie_id):
     except:
         return "", [], []
 
-def ingest_high_quality_movies(target_count=50, reset=False):
+def ingest_high_quality_movies(target_count=500, reset=True):
     print(f"--- 🌟 Starting Super-Ingest (Target: {target_count}, Reset: {reset}) ---")
     
     rec = MovieRecommender()
