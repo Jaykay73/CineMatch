@@ -60,23 +60,43 @@ class MovieRecommender:
             self.df = pd.concat([self.df, new_row], ignore_index=True)
 
     def get_banned_genres(self, query_text):
-        """Returns a list of genres to BAN based on the user's vibe."""
+        """
+        Returns a list of genres to BAN based on the user's vibe.
+        """
         query_lower = query_text.lower()
-        
-        # 1. HAPPY / COMEDY MODE -> Ban Dark Stuff
+        banned_genres = set() # Use a set to prevent duplicates
+
+        # 1. HAPPY / COMEDY MODE
         if any(w in query_lower for w in ["happy", "uplifting", "comedy", "laugh", "cheerful", "funny"]):
-            return ["Horror", "Thriller", "Crime", "Tragedy"]
+            banned_genres.update(["Horror", "Thriller", "War", "Crime", "Tragedy"])
 
-        # 2. FAMILY / KIDS MODE -> Ban Adult Stuff
-        if any(w in query_lower for w in ["family", "kid", "child", "animation", "disney"]):
-            return ["Horror", "Crime", "War", "Romance", "Adult"]
+        # 2. FAMILY / KIDS MODE
+        # The trigger "family" is dangerous because of "Crime Family", so we check context.
+        if any(w in query_lower for w in ["kid", "child", "animation", "disney", "pixar"]):
+            banned_genres.update(["Horror", "Crime", "War", "Romance", "Adult"])
+        
+        # Special check for "Family" to avoid the "Crime Family" bug
+        # We only trigger Family mode if "Crime" is NOT in the query.
+        elif "family" in query_lower and "crime" not in query_lower:
+             banned_genres.update(["Horror", "Crime", "War", "Romance", "Adult"])
 
-        # 3. ROMANCE MODE -> Ban Horror
+        # 3. ROMANCE MODE
         if "romantic" in query_lower or "romance" in query_lower:
-            return ["Horror"]
+            banned_genres.update(["Horror"])
 
-        return []
+        # --- 🛡️ THE IMMUNITY RULE 🛡️ ---
+        # If the user's query explicitly mentions a genre (e.g. "Crime Drama..."),
+        # then that genre is IMMUNE. We must REMOVE it from the ban list.
+        
+        final_bans = []
+        for ban in banned_genres:
+            # If the banned genre is actually IN the query text, allow it.
+            if ban.lower() in query_lower:
+                continue 
+            final_bans.append(ban)
 
+        return final_bans
+        
     def recommend(self, text_query, k=10):
         """
         Smart Recommendation with Guardrails
