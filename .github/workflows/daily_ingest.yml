@@ -39,7 +39,7 @@ jobs:
           # This variable tells python we are in GitHub Actions
           GITHUB_ACTIONS: "true"
         run: |
-          python src/ingest.py
+          python -m src/ingest.py
 
       # 5. Save the New Brain to GitHub
       - name: Commit and Push New Database
